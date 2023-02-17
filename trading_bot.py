@@ -1,89 +1,47 @@
 import time
 import logging
+import schedule
+import configparser
 from strategy import BinanceStrategy
+from binance.exceptions import BinanceAPIException
 
 
-class BinanceTradingBot:
-    def __init__(self, api_key, api_secret, symbol):
-        self.strategy = BinanceStrategy(api_key, api_secret, symbol)
-        
-        # 設定logging
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-        self.logger.addHandler(handler)
+def run_bot():
+    """執行交易機器人"""
+    try:
+        # 讀取config
+        config = configparser.ConfigParser()
+        config.read('config.ini')
+        api_key = config.get('BINANCE', 'API_KEY')
+        api_secret = config.get('BINANCE', 'API_SECRET')
+        symbol = config.get('BOT', 'SYMBOL')
+        quantity = float(config.get('BOT', 'QUANTITY'))
+        leverage = int(config.get('BOT', 'LEVERAGE'))
+        stop_loss_pct = float(config.get('BOT', 'STOP_LOSS_PCT'))
+        take_profit_pct = float(config.get('BOT', 'TAKE_PROFIT_PCT'))
 
-        self.running = False
-        self.trades = []
-        self.open_orders = []
+        # 初始化策略
+        strategy = BinanceStrategy(api_key, api_secret, symbol)
 
-    def start(self, quantity=0.01, leverage=1, stop_loss_pct=0.05, take_profit_pct=0.1):
-        """啟動交易機器人"""
-        self.running = True
-        self.logger.info("交易機器人已啟動")
-        self.logger.info(f"交易品種: {self.strategy.symbol}")
-        self.logger.info(f"下單數量: {quantity}")
-        self.logger.info(f"使用杠杆: {leverage}")
-        self.logger.info(f"停損比例: {stop_loss_pct}")
-        self.logger.info(f"止盈比例: {take_profit_pct}")
+        # 設定交易參數
+        strategy.set_stop_loss_pct(stop_loss_pct)
+        strategy.set_take_profit_pct(take_profit_pct)
 
-        # 進入主循環
-        while self.running:
-            # 檢查開盤委託單
-            self.check_open_orders()
+        # 啟動交易機器人
+        strategy.start_trading(quantity=quantity, leverage=leverage)
 
-            # 執行策略
-            self.strategy.get_asset_balance()
-            self.strategy.get_btc_balance()
-            self.strategy.start_trading(
-                quantity=quantity, 
-                leverage=leverage, 
-                stop_loss_pct=stop_loss_pct, 
-                take_profit_pct=take_profit_pct
-            )
+    except BinanceAPIException as e:
+        logging.error(f"下單失敗: {e}")
 
-            # 暫停一段時間
-            time.sleep(5)
 
-    def stop(self):
-        """停止交易機器人"""
-        self.running = False
-        self.logger.info("交易機器人已停止")
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s [%(levelname)s] %(message)s',
+                        handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()])
 
-    def check_open_orders(self):
-        """檢查開盤委託單"""
-        orders = self.strategy.client.futures_get_open_orders(symbol=self.strategy.symbol)
+    # 每30秒執行一次交易
+    schedule.every(30).seconds.do(run_bot)
 
-        if len(orders) > 0:
-            self.logger.info("有開盤委託單")
-            self.logger.info(orders)
-            self.open_orders = orders
-
-        return orders
-    def close_open_orders(self):
-        """關閉所有開盤委託單"""
-        if len(self.open_orders) > 0:
-            for order in self.open_orders:
-                self.logger.info(f"關閉開盤委託單 {order['orderId']}")
-                self.strategy.client.futures_cancel_order(
-                    symbol=self.strategy.symbol, 
-                    orderId=order['orderId']
-                )
-            self.open_orders = []
-
-    def close_all_positions(self):
-        """關閉所有持倉"""
-        self.logger.info("正在關閉所有持倉...")
-        position = self.strategy.client.futures_position_information(symbol=self.strategy.symbol)
-
-        if position[0]['positionAmt'] > 0:
-            side = SIDE_SELL
-        else:
-            side = SIDE_BUY
-
-        quantity = abs(float(position[0]['positionAmt']))
-        self.strategy.client.futures_create_order(
-            symbol=self.strategy.symbol, 
-            side=side, 
-           
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
