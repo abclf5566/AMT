@@ -1,8 +1,24 @@
-class Config:
-    API_KEY = "YOUR_API_KEY"  # 請替換成你自己的API KEY
-    SECRET_KEY = "YOUR_SECRET_KEY"  # 請替換成你自己的SECRET KEY
-    SYMBOL = "BTCUSD"  # 交易的標的
-    POSITION_SIZE = 0.01  # 每次下單的交易量，單位是BTC
-    LEVERAGE = 1  # 下單的杠桿倍數
-    STOP_LOSS_PCT = 0.05  # 止損設置的百分比
-    TAKE_PROFIT_PCT = 0.1  # 止盈設置的百分比
+import os
+
+# 設定API KEY和SECRET
+API_KEY = os.environ.get('BINANCE_API_KEY')
+API_SECRET = os.environ.get('BINANCE_API_SECRET')
+
+# 設定交易品種
+SYMBOL = 'BTCUSDT'
+
+# 設定交易間隔（秒）
+TRADE_INTERVAL = 60
+
+# 設定RSI指標參數
+RSI_PERIOD = 14
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+
+# 設定交易數量和槓桿
+TRADE_QUANTITY = 0.01
+TRADE_LEVERAGE = 1
+
+# 設定止損和止盈百分比
+STOP_LOSS_PCT = 0.02
+TAKE_PROFIT_PCT = 0.04
