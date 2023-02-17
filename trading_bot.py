@@ -1,15 +1,12 @@
-import logging
 import time
-import threading
-import pandas as pd
-from datetime import datetime, timedelta
-
-from config import *
+import logging
 from strategy import BinanceStrategy
 
 
 class BinanceTradingBot:
-    def __init__(self):
+    def __init__(self, api_key, api_secret, symbol):
+        self.strategy = BinanceStrategy(api_key, api_secret, symbol)
+        
         # 設定logging
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
@@ -17,60 +14,76 @@ class BinanceTradingBot:
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
         self.logger.addHandler(handler)
 
-        # 創建策略實例
-        self.strategy = BinanceStrategy(api_key, api_secret, symbol)
+        self.running = False
+        self.trades = []
+        self.open_orders = []
 
-        # 設定持倉狀態
-        self.position = 0  # 0表示空倉，1表示多倉
+    def start(self, quantity=0.01, leverage=1, stop_loss_pct=0.05, take_profit_pct=0.1):
+        """啟動交易機器人"""
+        self.running = True
+        self.logger.info("交易機器人已啟動")
+        self.logger.info(f"交易品種: {self.strategy.symbol}")
+        self.logger.info(f"下單數量: {quantity}")
+        self.logger.info(f"使用杠杆: {leverage}")
+        self.logger.info(f"停損比例: {stop_loss_pct}")
+        self.logger.info(f"止盈比例: {take_profit_pct}")
 
-    def check_signal(self):
-        """檢查交易訊號"""
-        while True:
-            try:
-                # 取得當前持倉方向
-                position_info = self.strategy.client.futures_position_information(symbol=self.strategy.symbol)
-                if len(position_info) > 0:
-                    if float(position_info[0]['positionAmt']) > 0:
-                        self.position = 1
-                    else:
-                        self.position = 0
-                else:
-                    self.position = 0
+        # 進入主循環
+        while self.running:
+            # 檢查開盤委託單
+            self.check_open_orders()
 
-                # 取得K線資料
-                end_time = int(time.time() // 60 * 60 * 1000)
-                start_time = end_time - interval * 60 * 1000 * window
-                klines = self.strategy.client.futures_klines(symbol=self.strategy.symbol, interval=interval,
-                                                             startTime=start_time, endTime=end_time)
+            # 執行策略
+            self.strategy.get_asset_balance()
+            self.strategy.get_btc_balance()
+            self.strategy.start_trading(
+                quantity=quantity, 
+                leverage=leverage, 
+                stop_loss_pct=stop_loss_pct, 
+                take_profit_pct=take_profit_pct
+            )
 
-                # 將K線資料轉換成DataFrame
-                df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time',
-                                                   'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
-                                                   'taker_buy_quote_asset_volume', 'ignore'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
+            # 暫停一段時間
+            time.sleep(5)
 
-                # 計算指標
-                df['ma_short'] = df['close'].rolling(window=ma_short).mean()
-                df['ma_long'] = df['close'].rolling(window=ma_long).mean()
-                df['rsi'] = self.strategy.RSI(df['close'], rsi_window)
+    def stop(self):
+        """停止交易機器人"""
+        self.running = False
+        self.logger.info("交易機器人已停止")
 
-                # 檢查交易訊號
-                if self.position == 0:
-                    if df['ma_short'][-1] > df['ma_long'][-1] and df['rsi'][-1] > rsi_buy_threshold:
-                        self.strategy.start_trading(quantity=order_quantity, leverage=leverage,
-                                                     stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct)
-                        self.logger.info(f"買入 {self.strategy.symbol}")
-                elif self.position == 1:
-                    if df['ma_short'][-1] < df['ma_long'][-1] and df['rsi'][-1] < rsi_sell_threshold:
-                        self.strategy.start_trading(quantity=-order_quantity, leverage=leverage,
-                                                     stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct)
-                        self.logger.info(f"賣出 {self.strategy.symbol}")
+    def check_open_orders(self):
+        """檢查開盤委託單"""
+        orders = self.strategy.client.futures_get_open_orders(symbol=self.strategy.symbol)
 
-                time.sleep(check_interval)
-            except Exception as e:
-                self.logger.exception(e)
-                time.sleep(check_interval)
+        if len(orders) > 0:
+            self.logger.info("有開盤委託單")
+            self.logger.info(orders)
+            self.open_orders = orders
 
-    def run(self):
-        """啟動交
+        return orders
+    def close_open_orders(self):
+        """關閉所有開盤委託單"""
+        if len(self.open_orders) > 0:
+            for order in self.open_orders:
+                self.logger.info(f"關閉開盤委託單 {order['orderId']}")
+                self.strategy.client.futures_cancel_order(
+                    symbol=self.strategy.symbol, 
+                    orderId=order['orderId']
+                )
+            self.open_orders = []
+
+    def close_all_positions(self):
+        """關閉所有持倉"""
+        self.logger.info("正在關閉所有持倉...")
+        position = self.strategy.client.futures_position_information(symbol=self.strategy.symbol)
+
+        if position[0]['positionAmt'] > 0:
+            side = SIDE_SELL
+        else:
+            side = SIDE_BUY
+
+        quantity = abs(float(position[0]['positionAmt']))
+        self.strategy.client.futures_create_order(
+            symbol=self.strategy.symbol, 
+            side=side, 
+           
