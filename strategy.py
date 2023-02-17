@@ -73,8 +73,48 @@ class BinanceStrategy:
                 side = SIDE_BUY
                 stop_loss_price = round(price * (1 - stop_loss_pct), self.price_precision)
                 take_profit_price = round(price * (1 + take_profit_pct), self.price_precision)
-
+                
                 # 下單
                 try:
                     order = self.client.futures_create_order(
-                       
+                        symbol=self.symbol,
+                        side=side,
+                        type=order_type,
+                        quantity=order_quantity,
+                        reduceOnly=False,
+                        price=None,
+                        newClientOrderId=None,
+                        stopPrice=stop_loss_price,
+                        workingType=None,
+                        activationPrice=None,
+                        callbackRate=None,
+                        closePosition=False,
+                        priceProtect=False
+                    )
+
+                    self.logger.info(f"下單成功: {order}")
+                    self.balance = self.asset_balance * price
+                except Exception as e:
+                    self.logger.error(f"下單失敗: {e}")
+                    self.balance = 0.0
+
+            # 更新餘額
+            self.get_asset_balance()
+            self.get_btc_balance()
+
+            # 計算報酬率
+            pnl = self.balance - (self.asset_balance * price)
+            returns = pnl / self.balance if self.balance > 0 else 0.0
+            self.logger.info(f"報酬率: {returns:.2%}")
+
+            # 判斷是否觸發止損或止盈
+            if price <= stop_loss_price:
+                self.logger.info("止損觸發")
+                break
+            elif price >= take_profit_price:
+                self.logger.info("止盈觸發")
+                break
+
+            # 等待1秒
+            self.logger.info("等待1秒")
+            time.sleep(1)
