@@ -4,6 +4,8 @@ import config
 
 
 class BinanceApiClient:
+    KLINE_INTERVAL_1_MINUTE = '1m'
+    KLINE_INTERVAL_1_HOUR = '1h'
     def __init__(self, api_key, api_secret):
         self.client = Client(api_key, api_secret)
     
@@ -15,9 +17,15 @@ class BinanceApiClient:
         res = self.client.get_account()
         return res
 
-    def get_klines(self, symbol, interval, limit):
-        res = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        return res
+    def get_klines(self, symbol, interval, start_time, end_time):
+        klines = self.client.futures_historical_klines(
+            symbol=symbol,
+            interval=interval,
+            start_str=start_time.strftime("%d %b %Y %H:%M:%S"),
+            end_str=end_time.strftime("%d %b %Y %H:%M:%S"),
+            limit=1000
+        )
+        return klines
 
     def create_order(self, symbol, side, quantity, order_type, price=None, stop_price=None):
         params = {
@@ -61,6 +69,7 @@ class BinanceApiClient:
     def get_withdraw_history(self, coin):
         res = self.client.get_withdraw_history(coin=coin)
         return res
+    
 """
 __init__方法：初始化BinanceApiClient對象，使用Binance API密鑰進行身份驗證，並初始化Binance API客戶端；
 get_orderbook_ticker方法：獲取指定交易對的市場深度和最新價格等信息；
