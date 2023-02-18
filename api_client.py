@@ -4,10 +4,12 @@ import config
 
 
 class BinanceApiClient:
-    KLINE_INTERVAL_1_MINUTE = '1m'
-    KLINE_INTERVAL_1_HOUR = '1h'
+    def __init__(self):
+        self.positions = []
+
     def __init__(self, api_key, api_secret):
-        self.client = Client(api_key, api_secret)
+    #   self.client = Client(api_key, api_secret)
+        self.client = Client("qv4gLXSIxA6h4bBqGCEHwQl4JddurxuhVy5w7MEP7H2NJgUgN9Apa2ZFc5lLjmBD", "1pInbB0eydGfIEu3otJggKnShibfRtbvclLYphm7jEw7HVtwtps5CojJEyshFfS7")
     
     def get_orderbook_ticker(self, symbol):
         res = self.client.get_orderbook_ticker(symbol=symbol)
@@ -69,7 +71,40 @@ class BinanceApiClient:
     def get_withdraw_history(self, coin):
         res = self.client.get_withdraw_history(coin=coin)
         return res
-    
+
+    def get_spot_position(self, symbol):
+        position = self.client.futures_position_information(symbol=symbol)
+        for p in position:
+            if p['symbol'] == symbol:
+                return p
+        return None
+
+    def get_spot_account_info(self):
+        return self.client.get_account()
+
+    def open_position(self, timestamp, price, direction):
+        self.position = Position()
+        self.position.open(timestamp, price, direction)
+
+    def close_position(self, timestamp, price):
+        self.position.close(timestamp, price)
+        self.position = None
+
+    def update_stop_loss(self, low):
+        if self.position is not None:
+            self.position.update_stop_loss(low)
+
+    def check_stop_loss(self, price):
+        if self.position is not None:
+            return self.position.check_stop_loss(price)
+        else:
+            return False
+
+    def check_take_profit(self, price):
+        if self.position is not None:
+            return self.position.check_take_profit(price)
+        else:
+            return False
 """
 __init__方法：初始化BinanceApiClient對象，使用Binance API密鑰進行身份驗證，並初始化Binance API客戶端；
 get_orderbook_ticker方法：獲取指定交易對的市場深度和最新價格等信息；

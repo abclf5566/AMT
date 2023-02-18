@@ -116,3 +116,19 @@ class StopLossManager:
         min_notional = self.position_manager.api_client.get_symbol_info(self.symbol)['filters'][3]['minNotional']
         decimal_places = abs(int(math.log10(float(min_notional))))
         return decimal_places
+    
+    def open_position(self, timestamp, price, direction):
+        position = Position()
+        position.open(timestamp, price, direction)
+        self.positions.append(position)
+
+    def close_position(self, timestamp, price):
+        for position in self.positions:
+            if position.check_stop_loss(price) or position.check_take_profit(price):
+                position.close(timestamp, price)
+                self.positions.remove(position)
+
+    def update_stop_loss(self, low):
+        for position in self.positions:
+            position.update_stop_loss(low)
+
