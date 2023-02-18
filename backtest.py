@@ -1,32 +1,60 @@
 import backtrader as bt
+import datetime
 import pandas as pd
-from datetime import datetime
-from quant_strategy import QuantStrategy
+import os
+import config
+from api_client import BinanceApiClient
 
-# 載入歷史數據
-df = pd.read_csv('BTCUSDT-1m.csv')
-df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-df.set_index('datetime', inplace=True)
 
-# 創建 Cerebro 引擎
-cerebro = bt.Cerebro()
+class Strategy(bt.Strategy):
+    def __init__(self):
+        pass
 
-# 添加資料
-data = bt.feeds.PandasData(dataname=df)
-cerebro.adddata(data)
+    def next(self):
+        pass
 
-# 添加策略
-cerebro.addstrategy(QuantStrategy)
 
-# 設置初始資金和手續費率
-cerebro.broker.setcash(10000.0)
-cerebro.broker.setcommission(commission=0.0004)
+class BinanceData(bt.feeds.PandasData):
+    lines = ('open', 'high', 'low', 'close', 'volume', 'quote_volume')
+    params = (
+        ('nocase', True),
+        ('datetime', None),
+        ('open', 'open'),
+        ('high', 'high'),
+        ('low', 'low'),
+        ('close', 'close'),
+        ('volume', 'volume'),
+        ('quote_volume', 'quote_volume'),
+    )
 
-# 設置回測期間
-start_date = datetime(2021, 1, 1)
-end_date = datetime(2021, 2, 1)
-cerebro.adddata(data.loc[start_date:end_date])
 
-# 開始回測
-cerebro.run()
-cerebro.plot()
+class BinanceBacktest:
+    def __init__(self, symbol, start_date, end_date):
+        self.symbol = symbol
+        self.start_date = start_date
+        self.end_date = end_date
+        self.api_client = BinanceApiClient(config.API_KEY, config.API_SECRET)
+
+    def run(self):
+        # 獲取歷史K線數據
+        klines = self.api_client.get_historical_klines(self.symbol, Client.KLINE_INTERVAL_4HOUR, self.start_date, self.end_date)
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df = df.set_index('timestamp')
+
+        # 轉換為Backtrader的Data Feed
+        data = BinanceData(dataname=df)
+        cerebro = bt.Cerebro()
+        cerebro.adddata(data)
+        cerebro.addstrategy(Strategy)
+
+        # 回測
+        cerebro.run()
+
+        # 獲取回測結果
+        return cerebro.broker.get_value()
+
+if __name__ == '__main__':
+    backtest = BinanceBacktest(config.SYMBOL, datetime.datetime(2022, 1, 1), datetime.datetime(2022, 2, 1))
+    result = backtest.run()
+    print(result)
