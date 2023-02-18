@@ -2,10 +2,10 @@ import time
 from datetime import datetime
 from decimal import Decimal
 
-from amt.enums import PositionType
-from amt.logger import logger
-from amt.position import Position
-from amt.strategy import Strategy
+from enums import PositionType
+from logger import logger
+from position import Position
+from strategy import Strategy
 
 
 class Backtest:
