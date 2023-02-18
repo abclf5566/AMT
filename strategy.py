@@ -1,103 +1,84 @@
-from typing import List, Tuple
+import time
+from datetime import datetime
 from decimal import Decimal
-from enum import Enum
-from binance.enums import *
-from api_client import APIClient
-from position import Position, PositionType
-from config import trading_pairs, risk_ratio, aggressive_ratio, conservative_ratio, \
-    art_indicator_window, trading_amount, max_total_amount, api_key, api_secret
+
+from amt.enums import PositionType
+from amt.logger import logger
+from amt.position import Position
+from amt.strategy import Strategy
 
 
-class TradingStrategy(Enum):
-    AGGRESSIVE = 1
-    CONSERVATIVE = 2
+class Backtest:
+    def __init__(self, start_time: int, end_time: int, data: dict, fee: Decimal = Decimal('0.00075')):
+        self.start_time = start_time
+        self.end_time = end_time
+        self.data = data
+        self.fee = fee
 
+    def run(self, api_key: str, secret_key: str, symbol: str, quantity: Decimal, leverage: int = 1,
+            margin_type: str = 'isolated', initial_margin: Decimal = Decimal('100')):
+        api_client = APIClient(api_key, secret_key, testnet=True)
 
-class ArtIndicator:
-    def __init__(self, window: int):
-        self.window = window
-        self.prices = []
+        balance = self.get_balance(api_client, symbol)
+        if balance is None:
+            logger.error('Failed to get account balance')
+            return
 
-    def add_price(self, price: Decimal):
-        self.prices.append(price)
-        if len(self.prices) > self.window:
-            self.prices.pop(0)
+        position = Position(api_client, symbol)
+        position.open_position(symbol, quantity, Decimal(self.data[self.start_time]['close']),
+                               Decimal(self.data[self.start_time]['close']) * (1 - self.fee),
+                               Decimal(self.data[self.start_time]['close']) * (1 + self.fee),
+                               leverage, margin_type, initial_margin)
+        strategy = Strategy(api_client, symbol, quantity, leverage, margin_type, initial_margin)
 
-    def get_value(self) -> Tuple[Decimal, Decimal]:
-        if len(self.prices) == self.window:
-            ema = sum(self.prices) / self.window
-            deviation = (sum([abs(p - ema) for p in self.prices]) / self.window).quantize(Decimal('.0001'))
-            return ema, deviation
-        return None, None
+        for timestamp, tick in self.data.items():
+            if timestamp < self.start_time or timestamp > self.end_time:
+                continue
 
+            price = Decimal(tick['close'])
 
-class TradingStrategyModule:
-    def __init__(self, trading_strategy: TradingStrategy, api_key: str, api_secret: str):
-        self.trading_strategy = trading_strategy
-        self.api_client = APIClient(api_key, api_secret)
-        self.art_indicator = ArtIndicator(art_indicator_window)
-        self.positions = {symbol: Position(symbol) for symbol in trading_pairs}
-        self.risk_ratio = risk_ratio
-        self.aggressive_ratio = aggressive_ratio
-        self.conservative_ratio = conservative_ratio
-        self.trading_amount = trading_amount
-        self.max_total_amount = max_total_amount
+            # 更新持仓信息
+            position.update_position(api_client)
+            strategy.update_position(position.quantity, position.entry_price, position.unrealized_profit)
 
-    def start(self):
-        self.api_client.start()
+            # 更新止损价
+            position.update_stop_loss(price)
 
-    def stop(self):
-        self.api_client.stop()
+            # 更新交易策略
+            strategy.update(price)
 
-    def on_depth(self, symbol: str, depth: dict):
-        # 更新 Art indicator
-        bids = [Decimal(price) for price, _ in depth['bids']]
-        asks = [Decimal(price) for price, _ in depth['asks']]
-        prices = sorted(bids + asks)
-        mid_price = prices[len(prices) // 2]
-        self.art_indicator.add_price(mid_price)
+            # 执行交易
+            if strategy.signal is not None:
+                signal_type, signal_price = strategy.signal
+                if signal_type == PositionType.LONG:
+                    if position.is_open and position.position_type == PositionType.SHORT:
+                        position.close_position(api_client)
+                    if not position.is_open or position.position_type == PositionType.SHORT:
+                        position.enter_long(quantity, price, price * (1 - self.fee), price * (1 + self.fee),
+                                            leverage, margin_type, initial_margin)
+                elif signal_type == PositionType.SHORT:
+                    if position.is_open and position.position_type == PositionType.LONG:
+                        position.close_position(api_client)
+                    if not position.is_open or position.position_type == PositionType.LONG:
+                        position.enter_short(quantity, price, price * (1 + self.fee), price * (1 - self.fee),
+                                             leverage, margin_type, initial_margin)
 
-        # 获取当前的交易量
-        available_quantity = self.positions[symbol].get_available_quantity()
-        total_quantity = self.positions[symbol].quantity
-        if self.trading_strategy == TradingStrategy.AGGRESSIVE:
-            target_quantity = Decimal(self.aggressive_ratio * self.trading_amount / mid_price).quantize(Decimal('.0001'))
-        else:
-            target_quantity = Decimal(self.conservative_ratio * self.trading_amount / mid_price).quantize(Decimal('.0001'))
+            time.sleep(1)
 
-        # 判断是否需要进行交易
-        if available_quantity == 0 and total_quantity == 0:
-            if target_quantity > 0:
-                # 开仓
-                self.open_position(symbol, target_quantity, mid_price)
-        elif available_quantity > 0:
-            if available_quantity / total_quantity > self.risk_ratio:
-                # 加仓
-                self.add_position(symbol, target_quantity, mid_price)
-            else:
-                # 不操作
-                pass
-        else:
-            # 平仓
-            self.close_position(symbol)
+        position.close_position(api_client)
 
-    def open_position(self, symbol: str, quantity: Decimal, price: Decimal):
-        """开仓"""
-        api_client = self.api_client
-        response = api_client.request('POST', '/api/v3/order', params={
-            'symbol': symbol,
-            'side': self.position_type.value,
-            'type': 'LIMIT',
-            'timeInForce': 'GTC',
-            'quantity': quantity,
-            'price': str(price),
-            'newOrderRespType': 'FULL',
+    def get_balance(self, api_client, symbol):
+        """获取当前余额"""
+        response = api_client.request('GET', '/api/v2/account', auth=True, params={
+            'recvWindow': 5000,
             'timestamp': int(time.time() * 1000),
         })
         if response.status_code == 200:
-            self.update_position(api_client)
-            logger.info(f'{self.position_type.name} position opened: {response.json()}')
-            return True
+            data = response.json()
+            for balance in data['balances']:
+                if balance['asset'] == symbol:
+                    return Decimal(balance['free'])
+            return Decimal(0)
         else:
-            logger.error(f'Failed to open {self.position_type.name} position: {response.json()}')
-            return False
+            logger.error(f'Failed to get balance for {symbol}: {response.json()}')
+            return Decimal(0)

@@ -1,103 +1,109 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import config
-from binance.client import Client
+from decimal import Decimal
+from typing import List
 
-# 引入 position.py 文件
-from position import PositionManager
+from .enums import OrderSide, OrderType, TimeInForce
+from .utils import calc_trade_fee, get_next_candle_time, round_down, round_up
+from .logger import logger
 
 
-# 使用Binance API獲取最近4小時的K線數據
-client = Client(config.API_KEY, config.API_SECRET)
-klines = client.futures_historical_klines(config.SYMBOL, Client.KLINE_INTERVAL_1HOUR, '4 hours ago UTC')
-df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'num_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-df = df.astype(float)
-df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-df = df.set_index('timestamp')
+class Backtest:
+    def __init__(self, symbol: str, interval: str, start_time: int, end_time: int, balance: Decimal,
+                 fee_rate: Decimal, max_positions: int = 1):
+        self.symbol = symbol
+        self.interval = interval
+        self.start_time = start_time
+        self.end_time = end_time
+        self.balance = balance
+        self.fee_rate = fee_rate
+        self.max_positions = max_positions
 
-# 定義交易策略和資金管理
-def strategy(df, short_period=10, long_period=20):
-    # 計算短期和長期移動平均線
-    df['ma_short'] = df['close'].rolling(short_period).mean()
-    df['ma_long'] = df['close'].rolling(long_period).mean()
+        self.current_time = start_time
+        self.candles = []
+        self.positions = []
+        self.order_history = []
 
-    # 生成交易信號
-    df['signal'] = 0
-    df.loc[df['ma_short'] > df['ma_long'], 'signal'] = 1
-    df.loc[df['ma_short'] < df['ma_long'], 'signal'] = -1
+    def load_candles(self, candles: List[dict]):
+        self.candles = candles
 
-    # 計算持倉
-    df['position'] = df['signal'].diff()
-    df['position'].fillna(method='ffill', inplace=True)
-    df['position'].fillna(0, inplace=True)
+    def run(self, strategy):
+        logger.info('Backtesting started')
+        for i, candle in enumerate(self.candles):
+            self.current_time = candle['close_time']
+            self.update_positions(candle)
+            signal = strategy.get_signal(candle, self.positions)
+            self.handle_signal(signal, candle)
+        self.close_all_positions()
+        logger.info('Backtesting completed')
 
-    # 計算收益和累計收益
-    df['returns'] = df['close'].pct_change() * df['position'].shift(1)
-    df['cumulative_returns'] = (1 + df['returns']).cumprod()
+    def update_positions(self, candle):
+        """更新持仓信息"""
+        for position in self.positions:
+            if position['side'] == OrderSide.BUY:
+                position['unrealized_profit'] = (candle['close'] - position['entry_price']) * position['quantity']
+            else:
+                position['unrealized_profit'] = (position['entry_price'] - candle['close']) * position['quantity']
+            position['value'] = position['entry_price'] * position['quantity'] + position['unrealized_profit']
 
-    # 計算最大回撤
-    df['drawdown'] = df['cumulative_returns'].cummax() - df['cumulative_returns']
-    df['max_drawdown'] = df['drawdown'].cummax()
+    def handle_signal(self, signal, candle):
+        if signal == 1 and len(self.positions) < self.max_positions:
+            self.enter_long(candle['close'])
+        elif signal == -1 and len(self.positions) < self.max_positions:
+            self.enter_short(candle['close'])
+        elif signal == 0 and len(self.positions) > 0:
+            self.close_all_positions()
 
-strategy(df)
+    def enter_long(self, price):
+        """买入开多"""
+        quantity = round_down(self.balance / price, 4)
+        if quantity == 0:
+            return
+        stop_loss_price = round_down(price * 0.99, 2)
+        take_profit_price = round_up(price * 1.01, 2)
+        self.open_position(price, quantity, stop_loss_price, take_profit_price)
 
-# 初始化持倉
-position_manager = PositionManager()
+    def enter_short(self, price):
+        """卖出开空"""
+        quantity = round_down(self.balance / price, 4)
+        if quantity == 0:
+            return
+        stop_loss_price = round_up(price * 1.01, 2)
+        take_profit_price = round_down(price * 0.99, 2)
+        self.open_position(price, -quantity, stop_loss_price, take_profit_price)
 
-# 記錄賬戶價值變化
-values = []
-
-# 回測每個時間點的收益
-for i, row in df.iterrows():
-    # 更新資金和倉位信息
-    position_manager.update_position()
-    position_manager.current_price = row['close']
-    
-    # 如果當前有持倉，則根據持倉方向計算收益
-    if position_manager.position != 0:
-        if position_manager.position == 1:
-            profit = (row['close'] - position_manager.entry_price) / position_manager.entry_price
-        elif position_manager.position == -1:
-            profit = (position_manager.entry_price - row['close']) / position_manager.entry_price
-
-        # 如果出現止損或止盈，則平倉
-        if position_manager.check_stop_loss(row['close']) or position_manager.check_take_profit(row['close']):
-            position_manager.close_position(side=position_manager.current_side, price=row['close'])
-            print(f"Close position at {row.name}, price {row['close']}, profit {profit:.2%}")
+    def open_position(self, price, quantity, stop_loss_price, take_profit_price):
+        if quantity > 0:
+            side = OrderSide.BUY
+            fee = calc_trade_fee(price, quantity, self.fee_rate)
+            cost = price * quantity
         else:
-            position_manager.update_stop_loss(row['low'])
+            side = OrderSide.SELL
+            fee = calc_trade_fee(price, -quantity, self.fee_rate)
+            cost = -price * quantity
+        if cost > self.balance:
+            return
+        self.balance -= cost + fee
+        self.order_history.append
+        
+    def open_position(self, price, quantity, stop_loss_price, take_profit_price):
+        """开仓"""
+        self.current_position = Position(self.api_client, self.symbol)
+        if quantity < 0:
+            self.current_position.enter_short(-quantity, price)
+        else:
+            self.current_position.enter_long(quantity, price)
+        if stop_loss_price is not None:
+            self.current_position.set_stop_loss(stop_loss_price)
+        if take_profit_price is not None:
+            self.current_position.set_take_profit(take_profit_price)
+        self.positions.append(self.current_position)
 
-    # 如果當前沒有持倉，則考慮是否進行開倉
-    else:
-        if row['position'] == 1:
-            position_manager.open_position(side='BUY', price=row['close'], quantity=config.ORDER_QUANTITY)
-            print(f"Open long position at {row.name}, price {row['close']}")
-        elif row['position'] == -1:
-            position_manager.open_position(side='SELL', price=row['close'], quantity=config.ORDER_QUANTITY)
-            print(f"Open short position at {row.name}, price {row['close']}")
-
-    # 記錄賬戶價值
-    account_info = position_manager.account_info
-    equity = float(account_info['totalWalletBalance'])
-    margin = float(account_info['totalMaintMargin'])
-    values.append(equity - margin)
-
-# 繪製資金變化圖表
-fig, ax = plt.subplots(2, 1, sharex=True, figsize=(15, 8))
-ax[0].plot(df.index, values)
-ax[0].set_ylabel('Portfolio Value')
-ax[1].plot(df.index, df['max_drawdown'])
-ax[1].set_ylabel('Max Drawdown')
-ax[1].set_xlabel('Date')
-plt.show()
-
-# 計算回測結果
-start_value = 10000
-end_value = values[-1]
-total_return = end_value / start_value - 1
-max_drawdown = df['max_drawdown'].max()
-
-print(f"Start value: {start_value:.2f}")
-print(f"End value: {end_value:.2f}")
-print(f"Total return: {total_return:.2%}")
-print(f"Max drawdown: {max_drawdown:.2%}")
+    def close_position(self, price):
+        """平仓"""
+        if self.current_position is not None:
+            self.current_position.close_position(self.api_client)
+            self.current_position = None
+        if self.positions:
+            self.positions[-1].update_position(self.api_client)
+        if self.positions and not self.positions[-1].is_open:
+            self.realized_pnl += self.positions[-1].unrealized_profit
+            self.positions.pop()
