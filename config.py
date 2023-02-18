@@ -16,22 +16,11 @@ LEVERAGE_LIMIT = 5  # 槓桿倍率上限
 TRADING_LIMIT = 0.5  # 資金使用比例上限
 RISK_LIMIT = 0.02  # 單次交易風險限制
 
-class Config:
-    # 请将下面的参数设置为您自己的值
-    API_KEY = 'your_api_key'
-    API_SECRET = 'your_api_secret'
-    SYMBOL = 'BTCUSDT'
-    STRATEGY_PARAMS = {
-        'leverage': 1,
-        'risk_level': 0.01,
-        'initial_balance': 1000,
-        'art_period': 10,
-        'atr_period': 10,
-        'atr_multiplier': 1,
-        'take_profit': 0.02,
-        'stop_loss': 0.01,
-        'trailing_stop': 0.005,
-        'max_volume': 0.1,
-        'max_position_size': 0.3,
-        'min_notional': 10
-    }
+
+# Strategy parameters
+ART_FAST_PERIOD = 5
+ART_SLOW_PERIOD = 20
+ART_THRESHOLD = 0.5
+TRADE_SIZE_PERCENT = 0.5
+STOP_LOSS_THRESHOLD = 0.02
+TAKE_PROFIT_THRESHOLD = 0.05

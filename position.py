@@ -1,134 +1,146 @@
-import math
-from decimal import Decimal, ROUND_HALF_DOWN
-from api_client import BinanceApiClient
-import config
+from decimal import Decimal
+import time
+
+from .enums import PositionType
+from .api_client import APIClient
+from .logger import logger
 
 
-class PositionManager:
-    def __init__(self):
-        self.api_client = BinanceApiClient(config.API_KEY, config.API_SECRET)
-        self.symbol = config.SYMBOL
-        self.trade_type = config.TRADE_TYPE
-        self.order_quantity = config.ORDER_QUANTITY
-        self.min_order_value = config.MIN_ORDER_VALUE
-        self.leverage_limit = config.LEVERAGE_LIMIT
-        self.trading_limit = config.TRADING_LIMIT
-        self.risk_limit = config.RISK_LIMIT
-        self.position = None
-        self.account_info = None
-        self.current_price = None
+class Position:
+    def __init__(self, api_client: APIClient, symbol: str):
+        self.api_client = api_client
+        self.symbol = symbol
+        self.is_open = False
+        self.quantity = Decimal(0)
+        self.entry_price = Decimal(0)
+        self.position_type = None
+        self.trailing_stop = None
 
-    def update_position(self):
-        if self.trade_type == 'SPOT':
-            self.position = self.api_client.get_spot_position(self.symbol)
-            self.account_info = self.api_client.get_spot_account_info()
+    def update_position(self, api_client: APIClient):
+        """获取当前仓位信息"""
+        response = api_client.request('GET', '/api/v2/account', auth=True, params={
+            'recvWindow': 5000,
+            'timestamp': int(time.time() * 1000),
+        })
+        if response.status_code == 200:
+            data = response.json()
+            for position in data['positions']:
+                if position['symbol'] == self.symbol:
+                    self.quantity = Decimal(position['positionAmt'])
+                    self.entry_price = Decimal(position['entryPrice'])
+                    self.position_type = PositionType.from_value(position['positionSide'])
+                    self.is_open = self.quantity != 0
+                    break
+
+    def open_position(self, symbol: str, quantity: Decimal, price: Decimal):
+        """开仓"""
+        if quantity <= 0:
+            return
+        if self.is_open:
+            self.close_position(self.api_client)
+        if quantity < 0:
+            side = 'SELL'
+            quantity = abs(quantity)
         else:
-            raise ValueError('Unsupported trade type')
+            side = 'BUY'
+        response = self.api_client.request('POST', '/api/v3/order', params={
+            'symbol': symbol,
+            'side': side,
+            'type': 'LIMIT',
+            'quantity': quantity,
+            'price': price,
+            'timeInForce': 'GTC',
+            'newOrderRespType': 'FULL',
+            'timestamp': int(time.time() * 1000),
+        })
+        if response.status_code == 200:
+            self.update_position(self.api_client)
+            logger.info(f'{side} {quantity} {symbol} at {price}')
+        else:
+            logger.error(f'Failed to open position: {response.json()}')
 
-    def open_position(self, side, quantity, price=None):
-        if self.trade_type == 'SPOT':
-            if price is None:
-                # 市價單
-                order = self.api_client.create_spot_order(
-                    symbol=self.symbol,
-                    side=side,
-                    quantity=quantity,
-                    order_type=ORDER_TYPE_MARKET
-                )
+    def enter_long(self, quantity, price):
+        """买入开多"""
+        self.open_position(self.symbol, quantity, price)
+
+    def enter_short(self, quantity, price):
+        """卖出开空"""
+        self.open_position(self.symbol, -quantity, price)
+
+    def set_stop_loss(self, stop_loss_price):
+        """设置止损价"""
+        response = self.api_client.request('POST', '/api/v3/order', params={
+            'symbol': self.symbol,
+            'side': self.position_type.opposite().value,
+            'type': 'STOP_MARKET',
+            'stopPrice': stop_loss_price,
+            'quantity': self.quantity,
+            'newOrderRespType': 'FULL',
+            'timestamp': int(time.time() * 1000),
+        })
+        if response.status_code == 200:
+            logger.info(f'Stop loss order placed at {stop_loss_price}')
+        else:
+            logger.error(f'Failed to set stop loss: {response.json()}')
+
+    def set_trailing_stop(self, trailing_stop):
+        """设置Trailing Stop参数"""
+        self.trailing_stop = trailing_stop
+
+    def update_stop_loss(self, price):
+        """更新止损价，根据Trailing Stop参数进行计算"""
+        if self.trailing_stop is not None:
+            if self.position_type == PositionType.LONG:
+                stop_loss_price = max(self.entry_price * (1 + self.trailing_stop), price * (1 + self.trailing_stop))
+            elif self.position_type == PositionType.SHORT:
+                stop_loss_price = min(self.entry_price * (1 - self.trailing_stop), price * (1 - self.trailing_stop))
             else:
-                # 限價單
-                order = self.api_client.create_spot_order(
-                    symbol=self.symbol,
-                    side=side,
-                    quantity=quantity,
-                    order_type=ORDER_TYPE_LIMIT,
-                    price=price
-                )
-        else:
-            raise ValueError('Unsupported trade type')
-        return order
+                return
+            self.set_stop_loss(stop_loss_price)
 
-    def close_position(self, side, quantity=None, price=None):
-        if self.trade_type == 'SPOT':
-            if quantity is None:
-                # 全部平倉
-                quantity = self.position['positionAmt']
-            if price is None:
-                # 市價單
-                order = self.api_client.create_spot_order(
-                    symbol=self.symbol,
-                    side=side,
-                    quantity=abs(float(quantity)),
-                    order_type=ORDER_TYPE_MARKET
-                )
+    def close_position(self, api_client):
+        """平仓"""
+        if self.is_open:
+            response = api_client.request('POST', '/api/v3/order', params={
+                'symbol': self.symbol,
+                'side': self.position_type.value,
+                'type': 'MARKET',
+                'quantity': self.quantity,
+                'newOrderRespType': 'FULL',
+                'timestamp': int(time.time() * 1000),
+            })
+            if response.status_code == 200:
+                self.is_open = False
+                self.update_position(api_client)
+                logger.info(f'{self.position_type.name} position closed')
             else:
-                # 限價單
-                order = self.api_client.create_spot_order(
-                    symbol=self.symbol,
-                    side=side,
-                    quantity=abs(float(quantity)),
-                    order_type=ORDER_TYPE_LIMIT,
-                    price=price
-                )
+                logger.error(f'Failed to close {self.position_type.name} position: {response.json()}')
+
+    def update_position(self, api_client):
+        """更新持仓信息"""
+        response = api_client.request('GET', '/api/v3/positionRisk')
+        if response.status_code == 200:
+            position_risks = response.json()
+            for position_risk in position_risks:
+                if position_risk['symbol'] == self.symbol:
+                    self.quantity = Decimal(position_risk['positionAmt'])
+                    self.entry_price = Decimal(position_risk['entryPrice'])
+                    self.unrealized_profit = Decimal(position_risk['unRealizedProfit'])
+                    break
         else:
-            raise ValueError('Unsupported trade type')
-        return order
-class StopLossManager:
-    def __init__(self):
-        self.position_manager = PositionManager()
-        self.symbol = config.SYMBOL
-        self.stop_loss_threshold = None
-        self.trailing_stop_loss = False
+            logger.error(f'Failed to update {self.position_type.name} position: {response.json()}')
 
-    def set_stop_loss(self, stop_loss_threshold, trailing_stop_loss=False):
-        self.stop_loss_threshold = stop_loss_threshold
-        self.trailing_stop_loss = trailing_stop_loss
-
-    def update_stop_loss(self):
-        current_price = self.position_manager.current_price
-        position_size = self.position_manager.position['positionAmt']
-        side = 'SELL' if float(position_size) > 0 else 'BUY'
-        if self.trailing_stop_loss:
-            stop_price = self._calculate_trailing_stop_price(side, current_price)
+    def update_unrealized_profit(self, api_client):
+        """更新未实现盈亏"""
+        response = api_client.request('GET', '/api/v2/account', auth=True, params={
+            'timestamp': int(time.time() * 1000),
+            'recvWindow': 5000,
+        })
+        if response.status_code == 200:
+            data = response.json()
+            for position in data['positions']:
+                if position['symbol'] == self.symbol:
+                    self.unrealized_profit = Decimal(position['unRealizedProfit'])
+                    break
         else:
-            stop_price = self._calculate_stop_price(side, current_price)
-        self.position_manager.set_stop_loss(stop_price, side)
-
-    def _calculate_stop_price(self, side, current_price):
-        if side == 'SELL':
-            stop_price = current_price * (1 - self.stop_loss_threshold)
-        else:
-            stop_price = current_price * (1 + self.stop_loss_threshold)
-        stop_price = self._round_price(stop_price)
-        return stop_price
-
-    def _calculate_trailing_stop_price(self, side, current_price):
-        # TODO: Implement trailing stop loss strategy
-        raise NotImplementedError
-
-    def _round_price(self, price):
-        decimal_places = self._get_decimal_places()
-        rounded_price = Decimal(str(price)).quantize(
-            Decimal('.' + '0' * decimal_places), rounding=ROUND_HALF_DOWN)
-        return float(rounded_price)
-
-    def _get_decimal_places(self):
-        min_notional = self.position_manager.api_client.get_symbol_info(self.symbol)['filters'][3]['minNotional']
-        decimal_places = abs(int(math.log10(float(min_notional))))
-        return decimal_places
-    
-    def open_position(self, timestamp, price, direction):
-        position = Position()
-        position.open(timestamp, price, direction)
-        self.positions.append(position)
-
-    def close_position(self, timestamp, price):
-        for position in self.positions:
-            if position.check_stop_loss(price) or position.check_take_profit(price):
-                position.close(timestamp, price)
-                self.positions.remove(position)
-
-    def update_stop_loss(self, low):
-        for position in self.positions:
-            position.update_stop_loss(low)
-
+            logger.error(f'Failed to update {self.position_type.name} unrealized profit: {response.json()}')

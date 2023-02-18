@@ -1,114 +1,138 @@
+import os
 from binance.client import Client
+from binance.websockets import BinanceSocketManager
 from binance.enums import *
+import config
+import requests
+import hmac
+import hashlib
+import time
+import json
 import config
 
 
+#get_klines：用於獲取歷史K線數據；
+#get_account_info：用於獲取帳戶信息；
+#place_order：用於下單。
+#get_fee_rate：用於獲取用戶的交易手續費率；
+#get_trade_fee：用於獲取交易手續費；
+#get_order_cost：用於計算實際手續費。
+
 class BinanceApiClient:
-    def __init__(self):
-        self.positions = []
-
     def __init__(self, api_key, api_secret):
-    #   self.client = Client(api_key, api_secret)
-        self.client = Client("qv4gLXSIxA6h4bBqGCEHwQl4JddurxuhVy5w7MEP7H2NJgUgN9Apa2ZFc5lLjmBD", "1pInbB0eydGfIEu3otJggKnShibfRtbvclLYphm7jEw7HVtwtps5CojJEyshFfS7")
-    
-    def get_orderbook_ticker(self, symbol):
-        res = self.client.get_orderbook_ticker(symbol=symbol)
-        return res
-
-    def get_account_info(self):
-        res = self.client.get_account()
-        return res
+        self.client = Client(api_key, api_secret)
+        self.bm = BinanceSocketManager(self.client)
 
     def get_klines(self, symbol, interval, start_time, end_time):
-        klines = self.client.futures_historical_klines(
+        klines = self.client.futures_klines(
             symbol=symbol,
             interval=interval,
-            start_str=start_time.strftime("%d %b %Y %H:%M:%S"),
-            end_str=end_time.strftime("%d %b %Y %H:%M:%S"),
-            limit=1000
+            startTime=start_time,
+            endTime=end_time
         )
         return klines
 
-    def create_order(self, symbol, side, quantity, order_type, price=None, stop_price=None):
-        params = {
-            'symbol': symbol,
-            'side': side,
-            'quantity': quantity,
-            'type': order_type
-        }
-        if price is not None:
-            params['price'] = price
-        if stop_price is not None:
-            params['stopPrice'] = stop_price
+    def get_account_info(self):
+        account_info = self.client.futures_account()
+        return account_info
 
-        res = self.client.create_order(**params)
-        return res
+    def place_order(self, symbol, trade_type, order_type, quantity, price=None, params=None):
+        if trade_type == 'SPOT':
+            order_func = self.client.create_order
+            order_params = {
+                'symbol': symbol,
+                'side': params['side'],
+                'type': params['type'],
+                'quantity': quantity
+            }
+            if 'price' in params:
+                order_params['price'] = params['price']
+            if 'stopPrice' in params:
+                order_params['stopPrice'] = params['stopPrice']
+            if 'timeInForce' in params:
+                order_params['timeInForce'] = params['timeInForce']
+        elif trade_type == 'MARGIN_LONG' or trade_type == 'MARGIN_SHORT':
+            order_func = self.client.create_margin_order
+            order_params = {
+                'symbol': symbol,
+                'side': params['side'],
+                'type': params['type'],
+                'quantity': quantity,
+                'isIsolated': True
+            }
+            if 'price' in params:
+                order_params['price'] = params['price']
+            if 'stopPrice' in params:
+                order_params['stopPrice'] = params['stopPrice']
+            if 'timeInForce' in params:
+                order_params['timeInForce'] = params['timeInForce']
+            if trade_type == 'MARGIN_LONG':
+                order_params['isBuyer'] = True
+            else:
+                order_params['isBuyer'] = False
+        else:
+            raise ValueError('Invalid trade type')
 
-    def cancel_order(self, symbol, order_id):
-        res = self.client.cancel_order(symbol=symbol, orderId=order_id)
-        return res
+        order_result = order_func(**order_params)
 
-    def get_open_orders(self, symbol):
-        res = self.client.get_open_orders(symbol=symbol)
-        return res
+        return order_result
+def request(method, path, params=None, data=None, headers=None):
+    url = config.API_URL + path
+    ts = int(time.time() * 1000)
+    headers = headers or {}
+    headers['X-MBX-APIKEY'] = config.API_KEY
+    if params is not None:
+        params['timestamp'] = ts
+        query_string = '&'.join([f'{k}={v}' for k, v in params.items()])
+        signature = hmac.new(config.API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        query_string += f'&signature={signature}'
+        url += '?' + query_string
+    if data is not None:
+        data = json.dumps(data)
+    response = requests.request(method, url, headers=headers, params=params, data=data)
+    return response
 
-    def get_all_orders(self, symbol):
-        res = self.client.get_all_orders(symbol=symbol)
-        return res
 
-    def get_order_status(self, symbol, order_id):
-        res = self.client.get_order(symbol=symbol, orderId=order_id)
-        return res
-
-    def get_order_trades(self, symbol, order_id):
-        res = self.client.get_my_trades(symbol=symbol, orderId=order_id)
-        return res
-
-    def get_deposit_history(self, coin):
-        res = self.client.get_deposit_history(coin=coin)
-        return res
-
-    def get_withdraw_history(self, coin):
-        res = self.client.get_withdraw_history(coin=coin)
-        return res
-
-    def get_spot_position(self, symbol):
-        position = self.client.futures_position_information(symbol=symbol)
-        for p in position:
-            if p['symbol'] == symbol:
-                return p
+def get_fee_rate(symbol):
+    params = {
+        'symbol': symbol,
+        'timestamp': int(time.time() * 1000),
+    }
+    response = request('GET', '/sapi/v1/asset/tradeFee', params=params)
+    if response.status_code != 200:
         return None
+    data = response.json()
+    if data is None:
+        return None
+    trade_fee = data.get('tradeFee', [])
+    maker_fee = None
+    taker_fee = None
+    for fee in trade_fee:
+        if fee['symbol'] == symbol:
+            maker_fee = float(fee['maker'])
+            taker_fee = float(fee['taker'])
+            break
+    if maker_fee is None or taker_fee is None:
+        return None
+    return maker_fee, taker_fee
 
-    def get_spot_account_info(self):
-        return self.client.get_account()
 
-    def open_position(self, timestamp, price, direction):
-        self.position = Position()
-        self.position.open(timestamp, price, direction)
+def get_trade_fee(symbol, is_maker):
+    fee_rate = get_fee_rate(symbol)
+    if fee_rate is None:
+        return None
+    maker_fee_rate, taker_fee_rate = fee_rate
+    if is_maker:
+        fee_rate = maker_fee_rate
+    else:
+        fee_rate = taker_fee_rate
+    return fee_rate
 
-    def close_position(self, timestamp, price):
-        self.position.close(timestamp, price)
-        self.position = None
 
-    def update_stop_loss(self, low):
-        if self.position is not None:
-            self.position.update_stop_loss(low)
-
-    def check_stop_loss(self, price):
-        if self.position is not None:
-            return self.position.check_stop_loss(price)
-        else:
-            return False
-
-    def check_take_profit(self, price):
-        if self.position is not None:
-            return self.position.check_take_profit(price)
-        else:
-            return False
-"""
-__init__方法：初始化BinanceApiClient對象，使用Binance API密鑰進行身份驗證，並初始化Binance API客戶端；
-get_orderbook_ticker方法：獲取指定交易對的市場深度和最新價格等信息；
-get_account_info方法：獲取帳戶信息，包括可用資金、持倉、凍結資金等；
-get_klines方法：獲取指定交易對的K線數據，包括開高低收價、成交量等；
-create_order方法：創建新訂單，包括市價單、限價單、止損單等。
-"""
+def get_order_cost(symbol, quantity, price, is_maker=False):
+    fee_rate = get_trade_fee(symbol, is_maker)
+    if fee_rate is None:
+        return None
+    cost = quantity * price
+    fee = cost * fee_rate
+    return fee
