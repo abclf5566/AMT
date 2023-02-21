@@ -18,7 +18,7 @@ trail_threshold = 0.01  # 移动止盈触发阈值
 trail_stop_loss_factor = 0.01  # 移动止盈因子
 
 # 读取历史K线数据
-df = pd.read_csv('BTCUSDT_1h_klines_30d.csv', index_col=0, parse_dates=True)
+df = pd.read_csv('ETHUSDT_1h_0d_klines.csv', index_col=0, parse_dates=True)
 
 def normalized_macd(close):
     macd, signal, hist = talib.MACD(close, fastperiod=13, slowperiod=26, signalperiod=9)
