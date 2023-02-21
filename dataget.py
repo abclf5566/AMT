@@ -2,9 +2,9 @@ import requests
 import pandas as pd
 
 # 設定所需下載的交易對和時間區間
-symbol = 'AVAXUSDT'
+symbol = 'ETHUSDT'
 interval = '1h'
-limit = 24 * 60  # 下載 1 天內的 K 線資料（1 小時有 60 分鐘，因此 1 天內有 24 * 60 分鐘）
+limit = 1000
 
 # 設定 API 請求 URL 和參數
 url = 'https://api.binance.com/api/v3/klines'
@@ -30,14 +30,14 @@ while True:
     klines.extend(data)
     params['endTime'] = data[0][0] - 1
 
-# 將 K 線資料轉換成 DataFrame timestamp,open,high,low,close,volume
+# 將 K 線資料轉換成 DataFrame
 df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close time', 'quote asset volume', 'number of trades', 'taker buy base asset volume', 'taker buy quote asset volume', 'ignore'])
 
 # 將時間戳記轉換成本地時間
 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
 # 將資料輸出成 CSV 檔案
-filename = f'{symbol}_{interval}_klines_{DAYS}d.csv'
+filename = f'{symbol}_{interval}_{DAYS}d_klines.csv'
 df.to_csv(filename, index=False)
 
 print(f'{filename} has been saved.')

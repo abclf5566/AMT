@@ -9,7 +9,7 @@ symbol = 'BTC/USDT'
 balance = 1000
 position = 0
 last_signal = None
-leverage = 5
+leverage = 2
 stop_loss = 0.03
 trailing_stop_loss = 0.02
 stop_profit = 0.05
@@ -18,7 +18,7 @@ trail_threshold = 0.01  # 移动止盈触发阈值
 trail_stop_loss_factor = 0.01  # 移动止盈因子
 
 # 读取历史K线数据
-df = pd.read_csv('BTCUSDT_1h_klines_30d.csv', index_col=0, parse_dates=True)
+df = pd.read_csv('AVAXUSDT_1h_klines_365d.csv', index_col=0, parse_dates=True)
 
 def normalized_macd(close):
     macd, signal, hist = talib.MACD(close, fastperiod=13, slowperiod=26, signalperiod=9)
