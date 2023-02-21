@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 
 # 设置交易对和参数
 symbol = 'BTC/USDT'
-balance = 1000
+balance = 40
 position = 0
 last_signal = None
-leverage = 10
+leverage = 20
 stop_loss = 0.03
 trailing_stop_loss = 0.02
 stop_profit = 0.05
@@ -24,7 +24,7 @@ stop_profit_price = 0
 trailing_stop_loss_price = 0
 
 # 读取历史K线数据
-df = pd.read_csv('ETHUSDT_1h_730d_klines.csv', index_col=0, parse_dates=True)
+df = pd.read_csv('ETHUSDT_1h_365d_klines.csv', index_col=0, parse_dates=True)
 
 def normalized_macd(close):
     macd, signal, hist = talib.MACD(close, fastperiod=13, slowperiod=26, signalperiod=9)
@@ -52,7 +52,6 @@ df['five_in_one'] = five_in_one(df['close'])
 
 # 计算移动平均线MA
 df['ma'] = ma(df['close'])
-
 
 
 

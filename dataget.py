@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 
 # 設定所需下載的交易對和時間區間
-symbol = 'ETHUSDT'
+symbol = 'AVAXUSDT'
 interval = '1h'
 limit = 1000
 
