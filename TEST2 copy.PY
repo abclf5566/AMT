@@ -1,19 +1,19 @@
-import sys
-sys.path.append('./function')
-import technical_indicators
 import pandas as pd
 import talib
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
+sys.path.append('./function')
+from technical_indicators import atr_stop_loss, five_in_one, normalized_macd, ma, df
 
 
 
 # 设置交易对和参数
 symbol = 'BTC/USDT'
-balance = 40
+balance = 400
 position = 0
 last_signal = None
-leverage = 10
+leverage = 1
 stop_loss = 0.03
 trailing_stop_loss = 0.02
 stop_profit = 0.05
@@ -25,26 +25,6 @@ last_buy_price = 0
 stop_profit_price = 0
 trailing_stop_loss_price = 0
 
-# 读取历史K线数据
-df = pd.read_csv('ETHUSDT_1h_365d_klines.csv', index_col=0, parse_dates=True)
-
-def normalized_macd(close):
-    macd, signal, hist = talib.MACD(close, fastperiod=13, slowperiod=26, signalperiod=9)
-    normalized_macd = (macd - np.mean(macd)) / np.std(macd)
-    return normalized_macd
-
-def five_in_one(close, rsi_period=21, sma_period=55):
-    rsi = talib.RSI(close, rsi_period)
-    sma = talib.SMA(close, sma_period)
-    max_high = talib.MAX(df['high'], rsi_period)
-    min_low = talib.MIN(df['low'], rsi_period)
-    stoch = talib.STOCH(df['high'], df['low'], df['close'], fastk_period=14, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
-    five_in_one = (rsi / 100.0) * (sma / df['close']) * (max_high / df['close']) * (df['close'] / min_low) * (stoch[0] / 100.0)
-    return five_in_one
-
-def ma(close, period=13):
-    ma = talib.SMA(close, timeperiod=period)
-    return ma
 
 # 计算Normalized MACD指标
 df['normalized_macd'] = normalized_macd(df['close'])
@@ -54,7 +34,6 @@ df['five_in_one'] = five_in_one(df['close'])
 
 # 计算移动平均线MA
 df['ma'] = ma(df['close'])
-
 
 
 # 循环遍历历史数据
@@ -80,7 +59,7 @@ for i in range(1, len(df)):
         if last_signal != 'buy':
             price = df['close'].iloc[i]
             amount = (balance * leverage) / price
-            stop_price = price * (1 - trailing_stop_loss)
+            stop_price = atr_stop_loss(df['high'][:i], df['low'][:i], df['close'][:i], period=14, multiplier=2)[-1] # 计算止损价
             if amount > balance:
                 amount = balance
             position += amount
@@ -143,7 +122,7 @@ for i in range(1, len(df)):
         if last_signal != 'sell':
             price = df['close'].iloc[i]
             amount = (balance * leverage) / price
-            stop_price = price * (1 + trailing_stop_loss)
+            stop_price = atr_stop_loss(df['high'][:i], df['low'][:i], df['close'][:i], period=14, multiplier=2)[-1] # 计算止损价
             if amount > balance:
                 amount = balance
             position -= amount
@@ -216,7 +195,7 @@ print('Final balance:', balance + position * df['close'].iloc[-1])
 print('Final position:', position)
 
 # 将时间设置为索引
-df = pd.read_csv('ETHUSDT_1h_365d_klines.csv', parse_dates=['timestamp'])
+df = pd.read_csv('btc_usdt_hourly_data.csv', parse_dates=['timestamp'])
 df.set_index('timestamp', inplace=True)
 
 # 添加资金变化的列
@@ -225,16 +204,10 @@ df['balance'] = balance
 
 # 计算每个交易日的资产总值
 df['total_assets'] = df['position'] * df['close'] + df['balance']
-# 找到历史数据中的最高收盘价
-highest_close_price = df['close'].max()
 
-# 绘制资产总值变化折线图，将Y轴最高点设置为历史数据中最高收盘价
-ax = df['total_assets'].plot(ylim=[balance, highest_close_price * position], title='Total assets')
-ax.set_ylabel('Asset value')
-ax.set_xlabel('Time')
 
 # 绘制资产总值变化折线图
-plt.ylim(bottom=balance)
+
 df['total_assets'].plot()
 # 显示图表
 plt.show()
